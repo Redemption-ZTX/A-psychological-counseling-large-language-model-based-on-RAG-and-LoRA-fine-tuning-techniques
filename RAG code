@@ -1,0 +1,91 @@
+# 导入应用程序所需的库和模块。
+import os
+from langchain_community.llms.chatglm3 import ChatGLM3  # 导入ChatGLM3模型，用于生成语言模型响应。
+import gradio as gr  # 导入Gradio库，用于创建Web界面。
+from langchain.document_loaders import DirectoryLoader  # 用于从目录加载文档。
+from langchain.prompts import PromptTemplate  # 用于创建提示模板。
+from langchain.text_splitter import CharacterTextSplitter  # 用于将文本文档分割成更小的块。
+from langchain.embeddings.huggingface import HuggingFaceEmbeddings  # 用于使用HuggingFace模型生成嵌入。
+from langchain.vectorstores import Chroma  # 用于存储和检索文档的向量化表示。
+from langchain.chains import RetrievalQA  # 用于构建基于检索的问答系统。
+from langchain.schema.messages import AIMessage  # 用于创建可用作提示或响应的AI消息。
+
+# 定义一个函数，从指定目录加载文档并将它们分割成更小的块。
+def load_documents(directory="documents"):
+    loader = DirectoryLoader(directory)  # 从指定目录加载文档。
+    documents = loader.load()  # 将文档加载到内存中。
+    text_spliter = CharacterTextSplitter(chunk_size=256, chunk_overlap=0)  # 定义一个文本分割器，具体指定块大小和重叠。
+    split_docs = text_spliter.split_documents(documents)  # 将文档分割成更小的块。
+    return split_docs  # 返回分割后的文档。
+
+# 定义一个函数，加载用于生成文档嵌入的嵌入模型。
+def load_embedding_modl():
+    encode_kwargs = {'normalize_embeddings': False}  # 指定嵌入编码选项。
+    model_kwargs = {'device': "cpu"}  # 指定模型选项，如使用CPU进行计算。
+    return HuggingFaceEmbeddings(
+        model_name="text2vec-base-chinese",  # 指定用于生成嵌入的模型名称。
+        model_kwargs=model_kwargs,
+        encode_kwargs=encode_kwargs,
+        cache_folder='text2vec-base-chinese',  # 指定模型的缓存文件夹。
+    )
+
+# 定义一个函数，从文档和它们的嵌入中创建一个Chroma向量存储。
+def store_chroma(docs, embeddings):
+    db = Chroma.from_documents(docs, embeddings, persist_directory="VectorStore")  # 从文档创建一个Chroma向量存储。
+    db.persist()  # 将向量存储持久化到磁盘。
+    return db  # 返回向量存储。
+
+# 加载嵌入模型。
+embeddings = load_embedding_modl()
+
+# 检查VectorStore目录是否存在，如果不存在则创建它，并根据需要加载或存储文档。
+if not os.path.exists("VectorStore"):
+    documents = load_documents()  # 如果向量存储不存在，则加载文档。
+    db = store_chroma(documents, embeddings)  # 从文档中创建并存储chroma向量存储。
+else:
+    db = Chroma(persist_directory="VectorStore", embedding_function=embeddings)  # 加载现有的chroma向量存储。
+
+# 将Chroma数据库转换为一个检索器，能够根据查询找到相关的文档。
+retriever = db.as_retriever(search_kwargs={'k': 3})  # 配置检索器返回前3个相关文档。
+
+# 定义ChatGLM3模型的端点URL。
+endpoint_url = "http://127.0.0.1:8000/v1/chat/completions"
+
+# 定义ChatGLM3模型的初始消息。
+messages = [
+    AIMessage(content="欢迎询问我问题"),  # 欢迎消息。
+]
+
+# 使用特定配置初始化ChatGLM3模型。
+llm = ChatGLM3(
+    endpoint_url=endpoint_url,
+    max_tokens=80000,  # 模型响应的最大令牌数。
+    prefix_messages=messages,  # 模型的初始消息。
+    top_p=0.9,  # 生成响应的采样参数。
+)
+
+# 为问答系统定义一个提示模板。
+prompt = PromptTemplate.from_template("""根据给定的context内容，回答question中的问题。
+如果无法从文中得出，就回答不知道，不要试图编造答案。
+答案最多三句话，保持答案简洁。
+context:{context}
+question:{question}
+""")
+
+# 使用ChatGLM3模型和文档检索器初始化RetrievalQA系统。
+qa = RetrievalQA.from_chain_type(
+    llm=llm,
+    retriever=retriever,
+    chain_type='stuff',
+    chain_type_kwargs={"prompt": prompt}  # 问答链配置，包括提示模板。
+)
+
+# 定义一个函数来处理聊天互动，使用用户问题查询RetrievalQA系统。
+def chat(question, history):
+    response = qa.run(question)  # 通过RetrievalQA系统运行问题。
+    return response  # 将响应返回给用户。
+
+# 创建一个Gradio聊天界面用于聊天函数。
+demo = gr.ChatInterface(chat)
+# 启动Gradio界面，使其作为Web应用程序可访问。
+demo.launch()
