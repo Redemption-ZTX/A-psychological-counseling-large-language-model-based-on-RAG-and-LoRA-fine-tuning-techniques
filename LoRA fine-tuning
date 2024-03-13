@@ -1,0 +1,23 @@
+#process.py文件  
+import pandas as pd
+import json
+
+# 导入 pandas 库并重命名为 pd
+
+# 从 CSV 文件中读取数据，指定编码为 GBK
+df = pd.read_csv('raw_data.csv', encoding='GBK')
+
+# 仅保留前50行数据
+df = df.head(50)
+
+# 使用 apply 函数将每一行数据转换为对话格式的字典，并存储为列表
+conversations = df.apply(lambda row: {
+    "conversations": [
+        {"role": "user", "content": row['ask']},
+        {"role": "assistant", "content": row['answer']}
+    ]
+}, axis=1).tolist()
+
+# 将对话列表写入到 JSON 文件中，指定编码为 UTF-8，禁用 ASCII 编码，缩进格式为 4
+with open('train.json', 'w', encoding='utf-8') as json_file:
+    json.dump(conversations, json_file, ensure_ascii=False, indent=4)
